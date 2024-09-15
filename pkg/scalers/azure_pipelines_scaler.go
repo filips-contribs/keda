@@ -292,6 +292,13 @@ func parseAzurePipelinesMetadata(ctx context.Context, logger logr.Logger, config
 			return nil, kedav1alpha1.AuthPodIdentity{}, err
 		}
 		meta.poolID = poolID
+	} else if val, ok := config.TriggerMetadata["poolNameFromEnv"]; ok && val != "" {
+		var err error
+		poolID, err := getPoolIDFromName(ctx, logger, config.ResolvedEnv[val], &meta, podIdentity, httpClient)
+		if err != nil {
+			return nil, kedav1alpha1.AuthPodIdentity{}, err
+		}
+		meta.poolID = poolID
 	} else {
 		if val, ok := config.TriggerMetadata["poolID"]; ok && val != "" {
 			var err error
@@ -300,8 +307,14 @@ func parseAzurePipelinesMetadata(ctx context.Context, logger logr.Logger, config
 				return nil, kedav1alpha1.AuthPodIdentity{}, err
 			}
 			meta.poolID = poolID
+		} else if val, ok := config.TriggerMetadata["poolIDFromEnv"]; ok && val != "" {
+			poolID, err := strconv.ParseInt(config.ResolvedEnv[val], 10, 0)
+			if err != nil {
+				return nil, kedav1alpha1.AuthPodIdentity{}, fmt.Errorf("error parsing azure pipelines metadata poolIDFromEnv: %w", err)
+			}
+			meta.poolID = int(poolID)
 		} else {
-			return nil, kedav1alpha1.AuthPodIdentity{}, fmt.Errorf("no poolName or poolID given")
+			return nil, kedav1alpha1.AuthPodIdentity{}, fmt.Errorf("no poolName (or poolNameFromEnv) or poolID (or poolIDFromEnv) given")
 		}
 	}
 

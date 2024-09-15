@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -23,8 +24,10 @@ type parseAzurePipelinesMetadataTestData struct {
 }
 
 var testAzurePipelinesResolvedEnv = map[string]string{
-	"AZP_URL":   "https://dev.azure.com/sample",
-	"AZP_TOKEN": "sample",
+	"AZP_URL":     "https://dev.azure.com/sample",
+	"AZP_TOKEN":   "sample",
+	"AZP_POOL":    "some pool",
+	"AZP_POOL_ID": "3",
 }
 
 var testAzurePipelinesMetadata = []parseAzurePipelinesMetadataTestData{
@@ -42,6 +45,10 @@ var testAzurePipelinesMetadata = []parseAzurePipelinesMetadataTestData{
 	{"missing personalAccessToken", map[string]string{"organizationURLFromEnv": "AZP_URL", "poolID": "1", "targetPipelinesQueueLength": "1"}, true, testAzurePipelinesResolvedEnv, map[string]string{}},
 	// missing poolID
 	{"missing poolID", map[string]string{"organizationURLFromEnv": "AZP_URL", "personalAccessTokenFromEnv": "AZP_TOKEN", "poolID": "", "targetPipelinesQueueLength": "1"}, true, testAzurePipelinesResolvedEnv, map[string]string{}},
+	// poolID from env
+	{"all properly formed", map[string]string{"organizationURLFromEnv": "AZP_URL", "personalAccessTokenFromEnv": "AZP_TOKEN", "poolIDFromEnv": "AZP_POOL_ID", "targetPipelinesQueueLength": "1", "jobsToFetch": "300"}, false, testAzurePipelinesResolvedEnv, map[string]string{}},
+	// poolName from env
+	{"all properly formed", map[string]string{"organizationURLFromEnv": "AZP_URL", "personalAccessTokenFromEnv": "AZP_TOKEN", "poolNameFromEnv": "AZP_POOL", "targetPipelinesQueueLength": "1", "jobsToFetch": "300"}, false, testAzurePipelinesResolvedEnv, map[string]string{}},
 	// activationTargetPipelinesQueueLength malformed
 	{"all properly formed", map[string]string{"organizationURLFromEnv": "AZP_URL", "personalAccessTokenFromEnv": "AZP_TOKEN", "poolID": "1", "targetPipelinesQueueLength": "1", "activationTargetPipelinesQueueLength": "A"}, true, testAzurePipelinesResolvedEnv, map[string]string{}},
 	// jobsToFetch malformed
@@ -90,34 +97,52 @@ type validateAzurePipelinesPoolTestData struct {
 	metadata   map[string]string
 	isError    bool
 	queryParam string
+	queryValue []string
 	httpCode   int
 	response   string
 }
 
 var testValidateAzurePipelinesPoolData = []validateAzurePipelinesPoolTestData{
 	// poolID exists and only one is returned
-	{"poolID exists and only one is returned", map[string]string{"poolID": "1"}, false, "poolID", http.StatusOK, `{"count":1,"value":[{"id":1}]}`},
+	{"poolID exists and only one is returned", map[string]string{"poolID": "1"}, false, "poolID", nil, http.StatusOK, `{"count":1,"value":[{"id":1}]}`},
 	// poolID doesn't exist
-	{"poolID doesn't exist", map[string]string{"poolID": "1"}, true, "poolID", http.StatusNotFound, `{}`},
+	{"poolID doesn't exist", map[string]string{"poolID": "1"}, true, "poolID", nil, http.StatusNotFound, `{}`},
 	// poolName exists and only one is returned
-	{"poolName exists and only one is returned", map[string]string{"poolName": "sample"}, false, "poolName", http.StatusOK, `{"count":1,"value":[{"id":1}]}`},
+	{"poolName exists and only one is returned", map[string]string{"poolName": "sample"}, false, "poolName", nil, http.StatusOK, `{"count":1,"value":[{"id":1}]}`},
 	// poolName exists and more than one are returned
-	{"poolName exists and more than one are returned", map[string]string{"poolName": "sample"}, true, "poolName", http.StatusOK, `{"count":2,"value":[{"id":1},{"id":2}]}`},
+	{"poolName exists and more than one are returned", map[string]string{"poolName": "sample"}, true, "poolName", nil, http.StatusOK, `{"count":2,"value":[{"id":1},{"id":2}]}`},
 	// poolName doesn't exist
-	{"poolName doesn't exist", map[string]string{"poolName": "sample"}, true, "poolName", http.StatusOK, `{"count":0,"value":[]}`},
+	{"poolName doesn't exist", map[string]string{"poolName": "sample"}, true, "poolName", nil, http.StatusOK, `{"count":0,"value":[]}`},
 	// poolName is used if poolName and poolID are defined
-	{"poolName is used if poolName and poolID are defined", map[string]string{"poolName": "sample", "poolID": "1"}, false, "poolName", http.StatusOK, `{"count":1,"value":[{"id":1}]}`},
+	{"poolName is used if poolName and poolID are defined", map[string]string{"poolName": "sample", "poolID": "1"}, false, "poolName", nil, http.StatusOK, `{"count":1,"value":[{"id":1}]}`},
 	// poolName can have a space in it
-	{"poolName can have a space in it", map[string]string{"poolName": "sample pool name"}, false, "poolName", http.StatusOK, `{"count":1,"value":[{"id":1}]}`},
+	{"poolName can have a space in it", map[string]string{"poolName": "sample pool name"}, false, "poolName", nil, http.StatusOK, `{"count":1,"value":[{"id":1}]}`},
+	// poolNameFromEnv exists and is used in absence of poolName
+	{"poolNameFromEnv exists and is used in absence of poolName", map[string]string{"poolNameFromEnv": "AZP_POOL"}, false, "poolName", nil, http.StatusOK, `{"count":1,"value":[{"id":1}]}`},
+	// poolNameFromEnv exists and takes precedence over poolID
+	{"poolNameFromEnv exists and takes precedence over poolID", map[string]string{"poolNameFromEnv": "AZP_POOL", "poolID": "1"}, false, "poolName", nil, http.StatusOK, `{"count":1,"value":[{"id":1}]}`},
+	// poolNameFromEnv exists and takes precedence over poolIDFromEnv
+	{"poolNameFromEnv exists and takes precedence over poolIDFromEnv", map[string]string{"poolNameFromEnv": "AZP_POOL", "poolIDFromEnv": "AZP_POOL_ID"}, false, "poolName", nil, http.StatusOK, `{"count":1,"value":[{"id":1}]}`},
+	// poolName exists and take precedence over existing poolNameFromEnv, poolID and poolIDFromEnv
+	{"poolName exists and take precedence over existing poolNameFromEnv, poolID and poolIDFromEnv", map[string]string{"poolNameFromEnv": "AZP_POOL", "poolIDFromEnv": "AZP_POOL_ID", "poolName": "sample1"}, false, "poolName", []string{"sample1"}, http.StatusOK, `{"count":1,"value":[{"id":1}]}`},
+	// poolID exists and take precedence over existing poolIDFromEnv
+	{"poolID exists and take precedence over existing poolIDFromEnv", map[string]string{"poolIDFromEnv": "AZP_POOL_ID", "poolID": "12"}, false, "poolID", []string{"12"}, http.StatusOK, `{"count":1,"value":[{"id":214}]}`},
+	// poolIDFromEnv exists and is used in absence of poolName, poolNameFromEnv and poolID
+	{"poolIDFromEnv exists and is used in absence of poolName, poolNameFromEnv and poolID", map[string]string{"poolIDFromEnv": "AZP_POOL_ID", "poolID": "214"}, false, "poolID", []string{"214"}, http.StatusOK, `{"count":1,"value":[{"id":214}]}`},
 }
 
 func TestValidateAzurePipelinesPool(t *testing.T) {
 	for _, testData := range testValidateAzurePipelinesPoolData {
 		t.Run(testData.testName, func(t *testing.T) {
 			var apiStub = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				_, ok := r.URL.Query()[testData.queryParam]
+				queryVal, ok := r.URL.Query()[testData.queryParam]
 				if !ok {
-					t.Error("Wrong QueryParam")
+					t.Error("Wrong queryParam")
+				}
+				if testData.queryValue != nil {
+					if !reflect.DeepEqual(queryVal, testData.queryValue) {
+						t.Errorf("Expected queryValue %v (type: %T), got %v (type: %T)", testData.queryValue, testData.queryValue, queryVal, queryVal)
+					}
 				}
 				w.WriteHeader(testData.httpCode)
 				_, _ = w.Write([]byte(testData.response))
